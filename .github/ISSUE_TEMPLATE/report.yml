@@ -1,0 +1,29 @@
+name: Report an extension
+description: Broken, outdated or harmful extension / Сломанное, устаревшее или опасное расширение
+labels: [report]
+body:
+  - type: input
+    id: id
+    attributes:
+      label: Extension id / Id расширения
+      placeholder: com.someone.name
+    validations:
+      required: true
+  - type: dropdown
+    id: kind
+    attributes:
+      label: What's wrong / Что не так
+      options:
+        - Doesn't install or breaks the panel / Не ставится или ломает панель
+        - Asks for more than it needs / Просит больше прав, чем нужно
+        - Harmful or suspicious behaviour / Вредное или подозрительное поведение
+        - Something else / Другое
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Details / Подробности
+      description: Kubek version, OS, logs, what you expected / Версия Kubek, ОС, логи, что ожидали
+    validations:
+      required: true

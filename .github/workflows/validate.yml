@@ -1,0 +1,40 @@
+name: Validate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: oven-sh/setup-bun@v2
+
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+      - run: bun run validate
+
+      - name: Flag changes outside entries
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          other=$(git diff --name-only "$BASE" HEAD | grep -vE '^(community/[^/]+\.json|README(\.ru)?\.md)$' || true)
+          if [ -n "$other" ]; then echo "::warning::This PR also changes $(echo $other)"; fi
+
+      - name: Check releases of changed entries
+        if: github.event_name == 'pull_request'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          changed=$(git diff --name-only --diff-filter=AM "$BASE" HEAD -- 'community/*.json')
+          if [ -n "$changed" ]; then bun run validate --remote $changed; fi
