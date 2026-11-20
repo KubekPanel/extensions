@@ -12,8 +12,10 @@ import {
   loadCommit,
   type Manifest,
   OFFICIAL_DIR,
-  officialPackage,
+  pack,
+  parseManifest,
   readBlocklist,
+  readFolder,
   sha256,
 } from "./lib";
 
@@ -73,23 +75,22 @@ function lastChange(path: string): { commit: string | null; updatedAt: string | 
   return { commit: commit || null, updatedAt: updatedAt || null };
 }
 
-// official packages are downloaded straight from the repo
+// official packages are built from the sources in official/, the same way as community ones
 for (const dir of listOfficial()) {
-  const pkg = officialPackage(join(OFFICIAL_DIR, dir));
-  if (blockedIds.has(pkg.manifest.id)) continue;
-  const path = `official/${dir}/${pkg.file}`;
+  const files = readFolder(join(OFFICIAL_DIR, dir));
+  const manifest = parseManifest(files);
+  if (blockedIds.has(manifest.id)) continue;
+  const bytes = pack(files);
+  const file = `${manifest.id}-${manifest.version}${PACKAGE_EXT}`;
+  writeFileSync(join(DIST, "packages", file), bytes);
   items.push(
-    toItem(pkg.manifest, pkg.files, {
+    toItem(manifest, files, {
       source: "official",
       repo: REPO,
       homepage: `https://github.com/${REPO}/tree/main/official/${dir}`,
       license: "MIT",
-      download: {
-        url: `https://raw.githubusercontent.com/${REPO}/main/${path}`,
-        sha256: sha256(pkg.bytes),
-        size: pkg.bytes.length,
-      },
-      ...lastChange(join(OFFICIAL_DIR, dir, pkg.file)),
+      download: { url: `${PAGES_URL}/packages/${file}`, sha256: sha256(bytes), size: bytes.length },
+      ...lastChange(join(OFFICIAL_DIR, dir)),
     }),
   );
 }

@@ -49,8 +49,3 @@ latest release or, without releases, your newest tag.
 Entries that break the rules, stay broken for long or lose their repo are removed. Harmful ones also go
 to `blocklist.json` with the reason, so panels that installed them can warn their users. Found a problem?
 [Open an issue](../../issues/new/choose).
-
-## Official extensions
-
-`official/<name>/` holds the sources and the built `.kubekext`. Bump `version` and rebuild the `.kubekext` on
-every change, `bun run validate` fails if the package and the sources have different versions.

@@ -102,7 +102,7 @@ export function checkEntry(file: string, raw: unknown): string[] {
   return errors;
 }
 
-// source files of an official item, without dotfiles, node_modules and the built package
+// source files of a package, without dotfiles, node_modules and built packages
 export function readFolder(dir: string, prefix = ""): Files {
   const files: Files = new Map();
   for (const name of readdirSync(dir)) {
@@ -138,16 +138,6 @@ export interface Package {
   manifest: Manifest;
   files: Files;
   bytes: Uint8Array;
-}
-
-// the built package in official/<name>/, there must be exactly one
-export function officialPackage(dir: string): Package & { file: string } {
-  const found = readdirSync(dir).filter((f) => f.endsWith(PACKAGE_EXT));
-  if (found.length !== 1) throw new Error(`needs exactly one ${PACKAGE_EXT}, found ${found.length}`);
-  const file = found[0]!;
-  const bytes = new Uint8Array(readFileSync(join(dir, file)));
-  const files = unpack(bytes);
-  return { file, bytes, files, manifest: parseManifest(files) };
 }
 
 // manifest can be in the root or one folder deep, the panel accepts both

@@ -11,7 +11,6 @@ import {
   listOfficial,
   loadCommit,
   OFFICIAL_DIR,
-  officialPackage,
   parseManifest,
   readBlocklist,
   readFolder,
@@ -32,7 +31,7 @@ const claim = (id: unknown, where: string) => {
   else ids.set(id, where);
 };
 
-// official: check the sources and the built package next to them
+// official: the sources, CI builds the package from them
 for (const dir of listOfficial()) {
   const where = `official/${dir}`;
   try {
@@ -41,11 +40,6 @@ for (const dir of listOfficial()) {
     report(where, [...checkCommon(manifest, files), ...checkManifest(manifest, files)]);
     claim(manifest.id, where);
 
-    // sources were edited but the package wasn't rebuilt
-    const pkg = officialPackage(join(OFFICIAL_DIR, dir));
-    if (pkg.manifest.id !== manifest.id || pkg.manifest.version !== manifest.version)
-      report(where, [`${pkg.file} is ${pkg.manifest.id}@${pkg.manifest.version}, sources are ${manifest.id}@${manifest.version}, rebuild it`]);
-    report(`${where}/${pkg.file}`, [...checkCommon(pkg.manifest, pkg.files), ...checkManifest(pkg.manifest, pkg.files)]);
   } catch (e) {
     report(where, [(e as Error).message]);
   }
