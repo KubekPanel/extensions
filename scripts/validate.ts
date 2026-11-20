@@ -1,5 +1,5 @@
 // bun run validate                      local checks
-// bun run validate --remote [files...]  also downloads the latest releases
+// bun run validate --remote [files...]  also builds community entries from their pinned commits
 import { basename, join } from "node:path";
 import { checkManifest } from "./config";
 import {
@@ -9,7 +9,7 @@ import {
   type Entry,
   listCommunity,
   listOfficial,
-  loadRelease,
+  loadCommit,
   OFFICIAL_DIR,
   officialPackage,
   parseManifest,
@@ -51,7 +51,7 @@ for (const dir of listOfficial()) {
   }
 }
 
-// community: only the entry files here, releases are checked with --remote
+// community: only the entry files here, the pinned commits are checked with --remote
 const entries = new Map<string, Entry>();
 for (const { file, raw } of listCommunity()) {
   const where = `community/${file}`;
@@ -82,11 +82,10 @@ if (args[0] === "--remote") {
     if (!entry) continue;
     const where = `community/${file}`;
     try {
-      const { release, errors } = await loadRelease(entry);
-      if (release)
-        errors.push(...checkCommon(release.manifest, release.files), ...checkManifest(release.manifest, release.files));
+      const { built, errors } = await loadCommit(entry);
+      if (built) errors.push(...checkCommon(built.manifest, built.files), ...checkManifest(built.manifest, built.files));
       report(where, errors);
-      if (release && !errors.length) console.log(`ok ${entry.id} ${release.tag}`);
+      if (built && !errors.length) console.log(`ok ${entry.id} ${built.manifest.version} at ${built.commit.slice(0, 7)}`);
     } catch (e) {
       report(where, [(e as Error).message]);
     }

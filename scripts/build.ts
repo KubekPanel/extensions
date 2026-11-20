@@ -1,7 +1,7 @@
-// writes dist/index.json and dist/icons, publish.yml deploys them to Pages
+// writes dist/index.json, dist/icons and dist/packages, publish.yml deploys them to Pages
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { checkManifest, indexFields, KIND, PAGES_URL, REPO } from "./config";
+import { checkManifest, indexFields, KIND, PACKAGE_EXT, PAGES_URL, REPO } from "./config";
 import {
   checkCommon,
   type Entry,
@@ -9,7 +9,7 @@ import {
   httpsUrl,
   listCommunity,
   listOfficial,
-  loadRelease,
+  loadCommit,
   type Manifest,
   OFFICIAL_DIR,
   officialPackage,
@@ -20,6 +20,7 @@ import {
 const DIST = join(import.meta.dir, "..", "dist");
 rmSync(DIST, { recursive: true, force: true });
 mkdirSync(join(DIST, "icons"), { recursive: true });
+mkdirSync(join(DIST, "packages"), { recursive: true });
 
 type Item = Record<string, any> & { id: string; source: string; icon: string | null };
 
@@ -65,10 +66,11 @@ function toItem(manifest: Manifest, files: Files, extra: { source: string } & Re
   };
 }
 
-// date of the last commit that touched the file, needs the full git history (fetch-depth: 0)
-function lastChange(path: string): string | null {
-  const out = Bun.spawnSync(["git", "log", "-1", "--format=%cI", "--", path], { cwd: OFFICIAL_DIR });
-  return out.stdout.toString().trim() || null;
+// last commit that touched the file, needs the full git history (fetch-depth: 0)
+function lastChange(path: string): { commit: string | null; updatedAt: string | null } {
+  const out = Bun.spawnSync(["git", "log", "-1", "--format=%H %cI", "--", path], { cwd: OFFICIAL_DIR });
+  const [commit, updatedAt] = out.stdout.toString().trim().split(" ");
+  return { commit: commit || null, updatedAt: updatedAt || null };
 }
 
 // official packages are downloaded straight from the repo
@@ -87,41 +89,52 @@ for (const dir of listOfficial()) {
         sha256: sha256(pkg.bytes),
         size: pkg.bytes.length,
       },
-      updatedAt: lastChange(join(OFFICIAL_DIR, dir, pkg.file)),
+      ...lastChange(join(OFFICIAL_DIR, dir, pkg.file)),
     }),
   );
 }
 
-// community packages come from the latest release in the author's repo
+// copies a url into dist, deploy replaces the whole site so kept files must be fetched again
+async function keep(url: string, path: string): Promise<boolean> {
+  const res = await fetch(url).catch(() => null);
+  if (!res?.ok) return false;
+  writeFileSync(path, new Uint8Array(await res.arrayBuffer()));
+  return true;
+}
+
+// community packages are built here from the pinned commit, so what was reviewed is what ships
 for (const { raw } of listCommunity()) {
   const entry = raw as Entry;
   if (blockedIds.has(entry.id)) continue;
   try {
-    const { release, errors } = await loadRelease(entry);
-    if (release)
-      errors.push(...checkCommon(release.manifest, release.files), ...checkManifest(release.manifest, release.files));
-    if (!release || errors.length) throw new Error(errors.join("; "));
+    const { built, errors } = await loadCommit(entry);
+    if (built)
+      errors.push(...checkCommon(built.manifest, built.files), ...checkManifest(built.manifest, built.files));
+    if (!built || errors.length) throw new Error(errors.join("; "));
+    const file = `${built.manifest.id}-${built.manifest.version}${PACKAGE_EXT}`;
+    writeFileSync(join(DIST, "packages", file), built.bytes);
     items.push(
-      toItem(release.manifest, release.files, {
+      toItem(built.manifest, built.files, {
         source: "community",
         repo: entry.repo,
-        homepage: release.homepage,
-        license: release.license,
-        download: { url: release.url, sha256: sha256(release.bytes), size: release.bytes.length },
-        updatedAt: release.publishedAt,
+        commit: built.commit,
+        homepage: built.homepage,
+        license: built.license,
+        download: { url: `${PAGES_URL}/packages/${file}`, sha256: sha256(built.bytes), size: built.bytes.length },
+        updatedAt: built.committedAt,
       }),
     );
   } catch (e) {
     const prev = previous.get(entry.id);
-    const kept = prev?.source === "community" ? prev : null;
+    let kept = prev?.source === "community" ? prev : null;
+    // the old package must come along, otherwise the kept item points at nothing
+    if (kept) {
+      const file = kept.download?.url?.split("/").pop();
+      if (!file || !(await keep(kept.download.url, join(DIST, "packages", file)))) kept = null;
+    }
     warnings.push(`${entry.id}: ${(e as Error).message}, ${kept ? `kept ${kept.version}` : "skipped"}`);
     if (!kept) continue;
-    // deploy replaces the whole site, so the old icon has to be copied too
-    if (kept.icon) {
-      const res = await fetch(kept.icon).catch(() => null);
-      if (res?.ok) writeFileSync(join(DIST, "icons", `${kept.id}.png`), new Uint8Array(await res.arrayBuffer()));
-      else kept.icon = null;
-    }
+    if (kept.icon && !(await keep(kept.icon, join(DIST, "icons", `${kept.id}.png`)))) kept.icon = null;
     items.push(kept);
   }
 }

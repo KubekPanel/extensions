@@ -5,7 +5,8 @@
   "scripts": {
     "validate": "bun scripts/validate.ts",
     "build": "bun scripts/build.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "bump": "bun scripts/bump.ts"
   },
   "dependencies": {
     "fflate": "^0.8.2"

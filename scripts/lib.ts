@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { unzipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import { MANIFEST_FILE, PACKAGE_EXT, RESERVED_PREFIX } from "./config";
 
 export const COMMUNITY_DIR = join(import.meta.dir, "..", "community");
@@ -10,9 +10,12 @@ export const OFFICIAL_DIR = join(import.meta.dir, "..", "official");
 const ID_PATTERN = /^[a-z0-9]+(\.[a-z0-9-]+)+$/;
 const SEMVER = /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/;
 const REPO_PATTERN = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/;
+const COMMIT_PATTERN = /^[0-9a-f]{40}$/;
+// relative folder inside the repo, no "..", no leading or trailing slash
+const PATH_PATTERN = /^(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._-]+(\/[A-Za-z0-9._-]+)*$/;
 // fields allowed in community/<id>.json
-const ENTRY_KEYS = new Set(["id", "repo", "asset"]);
-// bigger packages are rejected before download
+const ENTRY_KEYS = new Set(["id", "repo", "commit", "path"]);
+// bigger source archives are rejected while downloading
 const MAX_PACKAGE_BYTES = 50 * 1024 * 1024;
 // stops zip bombs, fflate never unpacks more than the archive declares
 const MAX_UNPACKED_BYTES = 200 * 1024 * 1024;
@@ -24,7 +27,8 @@ export type Manifest = Record<string, any>;
 export interface Entry {
   id: string;
   repo: string;
-  asset?: string;
+  commit: string;
+  path?: string;
 }
 
 export interface Blocked {
@@ -89,11 +93,11 @@ export function checkEntry(file: string, raw: unknown): string[] {
   if (typeof entry.repo !== "string" || !REPO_PATTERN.test(entry.repo))
     errors.push('repo must be "owner/name" on GitHub');
 
-  if (
-    entry.asset !== undefined &&
-    (typeof entry.asset !== "string" || !entry.asset.endsWith(PACKAGE_EXT))
-  )
-    errors.push(`asset must be a ${PACKAGE_EXT} file name`);
+  if (typeof entry.commit !== "string" || !COMMIT_PATTERN.test(entry.commit))
+    errors.push("commit must be a full 40 character commit sha");
+
+  if (entry.path !== undefined && (typeof entry.path !== "string" || !PATH_PATTERN.test(entry.path)))
+    errors.push('path must be a folder inside the repo, like "packages/my-blueprint"');
 
   return errors;
 }
@@ -102,7 +106,7 @@ export function checkEntry(file: string, raw: unknown): string[] {
 export function readFolder(dir: string, prefix = ""): Files {
   const files: Files = new Map();
   for (const name of readdirSync(dir)) {
-    if (name.startsWith(".") || name === "node_modules" || name.endsWith(PACKAGE_EXT)) continue;
+    if (skipped(name)) continue;
     const path = join(dir, name);
     const rel = prefix + name;
     if (statSync(path).isDirectory()) {
@@ -112,6 +116,22 @@ export function readFolder(dir: string, prefix = ""): Files {
     }
   }
   return files;
+}
+
+// dotfiles, node_modules and built packages never go into a package
+function skipped(name: string): boolean {
+  return name.startsWith(".") || name === "node_modules" || name.endsWith(PACKAGE_EXT);
+}
+
+// fixed date for every zip entry, so the same files always give the same sha256
+const ZIP_MTIME = new Date("2000-01-01T00:00:00Z");
+
+// zips files the same way every time, sorted paths and one mtime
+export function pack(files: Files): Uint8Array {
+  const tree: Record<string, [Uint8Array, { mtime: Date }]> = {};
+  for (const path of [...files.keys()].sort())
+    if (!path.split("/").some(skipped)) tree[path] = [files.get(path)!, { mtime: ZIP_MTIME }];
+  return zipSync(tree, { level: 9 });
 }
 
 export interface Package {
@@ -132,6 +152,11 @@ export function officialPackage(dir: string): Package & { file: string } {
 
 // manifest can be in the root or one folder deep, the panel accepts both
 function unpack(bytes: Uint8Array): Files {
+  return manifestRoot(unzipLimited(bytes));
+}
+
+// unzips with the size limit, keeps only files
+function unzipLimited(bytes: Uint8Array): Files {
   let total = 0;
   const all = unzipSync(bytes, {
     filter: (f) => {
@@ -140,7 +165,14 @@ function unpack(bytes: Uint8Array): Files {
       return true;
     },
   });
-  const names = Object.keys(all).filter((n) => !n.endsWith("/"));
+  const files: Files = new Map();
+  for (const [name, data] of Object.entries(all)) if (!name.endsWith("/")) files.set(name, data);
+  return files;
+}
+
+// cuts the folder above the manifest
+function manifestRoot(all: Files): Files {
+  const names = [...all.keys()];
   let root = "";
   if (!names.includes(MANIFEST_FILE)) {
     const nested = names.find((n) => /^[^/]+\/[^/]+$/.test(n) && n.endsWith(`/${MANIFEST_FILE}`));
@@ -149,7 +181,7 @@ function unpack(bytes: Uint8Array): Files {
   }
   const files: Files = new Map();
   for (const name of names)
-    if (name.startsWith(root)) files.set(name.slice(root.length), all[name]!);
+    if (name.startsWith(root)) files.set(name.slice(root.length), all.get(name)!);
   return files;
 }
 
@@ -194,7 +226,7 @@ export function httpsUrl(value: unknown): string | null {
 }
 
 // GET to the GitHub API, with GITHUB_TOKEN the limit is 1000 requests an hour instead of 60
-async function gh<T>(path: string): Promise<T> {
+export async function gh<T>(path: string): Promise<T> {
   const token = process.env.GITHUB_TOKEN;
   const res = await fetch(`https://api.github.com${path}`, {
     headers: {
@@ -215,84 +247,89 @@ interface GhRepo {
   license: { spdx_id: string } | null;
 }
 
-interface GhRelease {
-  tag_name: string;
-  published_at: string;
-  assets: { name: string; size: number; browser_download_url: string }[];
+interface GhCommit {
+  sha: string;
+  commit: { committer: { date: string } | null };
 }
 
-export interface Release extends Package {
-  tag: string;
-  url: string;
-  publishedAt: string;
+export interface Built extends Package {
+  commit: string;
+  committedAt: string;
   license: string | null;
   homepage: string;
 }
 
-// downloads the package from the latest release of an entry and checks it against the entry
+// reads the body with a byte limit, content-length is not always there
+async function download(url: string, limit: number): Promise<Uint8Array> {
+  const res = await fetch(url, { headers: { "user-agent": "kubek-catalog" } });
+  if (!res.ok || !res.body) throw new Error(`download ${url}: ${res.status}`);
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for await (const chunk of res.body) {
+    total += chunk.byteLength;
+    if (total > limit) throw new Error("source archive is bigger than 50 MB");
+    chunks.push(chunk);
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
+// downloads the pinned commit of an entry and builds the package from it
 // throws only on network errors, broken rules go to errors
-export async function loadRelease(
+export async function loadCommit(
   entry: Entry,
-): Promise<{ release: Release | null; errors: string[] }> {
+): Promise<{ built: Built | null; errors: string[] }> {
   const errors: string[] = [];
-  const fail = () => ({ release: null, errors });
+  const fail = () => ({ built: null, errors });
 
   const repo = await gh<GhRepo>(`/repos/${entry.repo}`);
   if (repo.archived) errors.push("repo is archived");
   if (!repo.license) errors.push("repo has no license");
 
-  let release: GhRelease;
+  let commit: GhCommit;
   try {
-    release = await gh<GhRelease>(`/repos/${entry.repo}/releases/latest`);
+    commit = await gh<GhCommit>(`/repos/${entry.repo}/commits/${entry.commit}`);
   } catch {
-    errors.push("repo has no published release");
+    errors.push(`commit ${entry.commit} not found in ${entry.repo}`);
     return fail();
   }
-  const tag = release.tag_name;
-
-  const assets = release.assets.filter((a) =>
-    entry.asset ? a.name === entry.asset : a.name.endsWith(PACKAGE_EXT),
-  );
-  if (assets.length !== 1) {
-    errors.push(`release ${tag} must have exactly one ${entry.asset ?? `*${PACKAGE_EXT}`} asset, found ${assets.length}`);
-    return fail();
-  }
-  const asset = assets[0]!;
-  if (asset.size > MAX_PACKAGE_BYTES) {
-    errors.push(`${asset.name} is bigger than 50 MB`);
-    return fail();
-  }
-
-  const res = await fetch(asset.browser_download_url);
-  if (!res.ok) throw new Error(`download ${asset.name}: ${res.status}`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
 
   let files: Files;
   let manifest: Manifest;
   try {
-    files = unpack(bytes);
+    // codeload puts everything into <repo>-<sha>/
+    const archive = unzipLimited(await download(`https://codeload.github.com/${entry.repo}/zip/${entry.commit}`, MAX_PACKAGE_BYTES));
+    const top = [...archive.keys()][0]?.split("/")[0] ?? "";
+    const prefix = `${top}/${entry.path ? `${entry.path}/` : ""}`;
+    const tree: Files = new Map();
+    for (const [name, data] of archive) if (name.startsWith(prefix)) tree.set(name.slice(prefix.length), data);
+    if (!tree.has(MANIFEST_FILE)) throw new Error(`no ${MANIFEST_FILE} in ${entry.path ?? "the repo root"}`);
+    files = unpack(pack(tree));
     manifest = parseManifest(files);
   } catch (e) {
-    errors.push(`${asset.name}: ${(e as Error).message}`);
+    errors.push((e as Error).message);
     return fail();
   }
 
   if (manifest.id !== entry.id)
     errors.push(`manifest id ${manifest.id} doesn't match entry id ${entry.id}`);
-  if (manifest.version !== tag.replace(/^v/, ""))
-    errors.push(`release tag ${tag} doesn't match manifest version ${manifest.version}`);
 
+  const bytes = pack(files);
   return {
     errors,
-    release: {
+    built: {
       manifest,
       files,
       bytes,
-      tag,
-      url: asset.browser_download_url,
-      publishedAt: release.published_at,
+      commit: commit.sha,
+      committedAt: commit.commit.committer?.date ?? new Date().toISOString(),
       license: repo.license?.spdx_id ?? null,
-      homepage: httpsUrl(manifest.homepage) ?? repo.html_url,
+      homepage: httpsUrl(manifest.homepage) ?? `${repo.html_url}/tree/${entry.commit}${entry.path ? `/${entry.path}` : ""}`,
     },
   };
 }
