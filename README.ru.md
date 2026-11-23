@@ -26,7 +26,7 @@ bun run build               # dist/index.json, иконки и пакеты
 
 От команды Kubek, файлы в [`official/`](official).
 
-_Пока тут ничего нет :(_
+- [Туннель](official/tunnel) - Доступ к серверу без проброса портов: Minekube Connect, Pinggy или свой frp
 
 ## От сообщества
 

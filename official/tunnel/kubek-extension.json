@@ -1,0 +1,43 @@
+{
+  "manifestVersion": 1,
+  "id": "com.kubek.tunnel",
+  "name": "Tunnel",
+  "version": "1.0.0",
+  "description": "Share a server with friends without port forwarding: Minekube Connect, Pinggy or your own frp server",
+  "author": { "name": "KubekPanel", "url": "https://github.com/KubekPanel" },
+  "license": "MIT",
+  "homepage": "https://github.com/KubekPanel/extensions/tree/main/official/tunnel",
+  "icon": "🌐",
+  "keywords": ["tunnel", "share", "port forwarding", "minekube", "pinggy", "frp"],
+  "engines": { "kubek": ">=4.1.3" },
+  "permissions": {
+    "declares": [
+      {
+        "key": "ext.tunnel.use",
+        "label": "Open servers to the internet through a tunnel",
+        "group": "Tunnel"
+      }
+    ],
+    "requires": [
+      "events:server",
+      "servers:read",
+      "http:routes",
+      "http:outbound",
+      "storage",
+      "process:spawn"
+    ]
+  },
+  "backend": {
+    "entry": "backend/index.ts",
+    "isolation": "in-process",
+    "events": ["server.running", "server.stopped", "server.crashed", "server.deleted"]
+  },
+  "frontend": {
+    "entry": "frontend/index.ts",
+    "contributes": {
+      "slots": [
+        { "slot": "server.sidebar", "component": "TunnelCard", "order": 10 }
+      ]
+    }
+  }
+}

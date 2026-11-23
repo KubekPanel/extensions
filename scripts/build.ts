@@ -1,4 +1,4 @@
-// writes dist/index.json, dist/icons and dist/packages, publish.yml deploys them to Pages
+// writes dist/index.json, dist/icons, dist/readme and dist/packages, publish.yml deploys them to Pages
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { checkManifest, indexFields, KIND, PACKAGE_EXT, PAGES_URL, REPO } from "./config";
@@ -23,6 +23,7 @@ const DIST = join(import.meta.dir, "..", "dist");
 rmSync(DIST, { recursive: true, force: true });
 mkdirSync(join(DIST, "icons"), { recursive: true });
 mkdirSync(join(DIST, "packages"), { recursive: true });
+mkdirSync(join(DIST, "readme"), { recursive: true });
 
 type Item = Record<string, any> & { id: string; source: string; icon: string | null };
 
@@ -52,8 +53,27 @@ function icon(manifest: Manifest, files: Files) {
   return { icon: null, iconText: text };
 }
 
+// README.md and README.<lang>.md from the package root, the panel shows the one in its language
+function readme(manifest: Manifest, files: Files, base: string) {
+  const out: Record<string, string> = {};
+  for (const [path, bytes] of files) {
+    const match = /^README(?:\.([a-z]{2}))?\.md$/i.exec(path);
+    if (!match) continue;
+    const lang = match[1]?.toLowerCase() ?? "default";
+    const name = lang === "default" ? `${manifest.id}.md` : `${manifest.id}.${lang}.md`;
+    writeFileSync(join(DIST, "readme", name), bytes);
+    out[lang] = `${PAGES_URL}/readme/${name}`;
+  }
+  return Object.keys(out).length ? { files: out, base } : null;
+}
+
 // one item of index.json
-function toItem(manifest: Manifest, files: Files, extra: { source: string } & Record<string, unknown>): Item {
+function toItem(
+  manifest: Manifest,
+  files: Files,
+  readmeBase: string,
+  extra: { source: string } & Record<string, unknown>,
+): Item {
   return {
     id: manifest.id,
     name: manifest.name,
@@ -64,6 +84,7 @@ function toItem(manifest: Manifest, files: Files, extra: { source: string } & Re
     engines: manifest.engines,
     ...indexFields(manifest),
     ...icon(manifest, files),
+    readme: readme(manifest, files, readmeBase),
     ...extra,
   };
 }
@@ -83,14 +104,15 @@ for (const dir of listOfficial()) {
   const bytes = pack(files);
   const file = `${manifest.id}-${manifest.version}${PACKAGE_EXT}`;
   writeFileSync(join(DIST, "packages", file), bytes);
+  const changed = lastChange(join(OFFICIAL_DIR, dir));
   items.push(
-    toItem(manifest, files, {
+    toItem(manifest, files, `https://github.com/${REPO}/blob/${changed.commit ?? "main"}/official/${dir}/`, {
       source: "official",
       repo: REPO,
       homepage: `https://github.com/${REPO}/tree/main/official/${dir}`,
       license: "MIT",
       download: { url: `${PAGES_URL}/packages/${file}`, sha256: sha256(bytes), size: bytes.length },
-      ...lastChange(join(OFFICIAL_DIR, dir)),
+      ...changed,
     }),
   );
 }
@@ -114,8 +136,9 @@ for (const { raw } of listCommunity()) {
     if (!built || errors.length) throw new Error(errors.join("; "));
     const file = `${built.manifest.id}-${built.manifest.version}${PACKAGE_EXT}`;
     writeFileSync(join(DIST, "packages", file), built.bytes);
+    const folder = entry.path ? `${entry.path.replace(/^\/+|\/+$/g, "")}/` : "";
     items.push(
-      toItem(built.manifest, built.files, {
+      toItem(built.manifest, built.files, `https://github.com/${entry.repo}/blob/${built.commit}/${folder}`, {
         source: "community",
         repo: entry.repo,
         commit: built.commit,
@@ -136,6 +159,10 @@ for (const { raw } of listCommunity()) {
     warnings.push(`${entry.id}: ${(e as Error).message}, ${kept ? `kept ${kept.version}` : "skipped"}`);
     if (!kept) continue;
     if (kept.icon && !(await keep(kept.icon, join(DIST, "icons", `${kept.id}.png`)))) kept.icon = null;
+    for (const [lang, url] of Object.entries((kept.readme?.files ?? {}) as Record<string, string>)) {
+      if (!(await keep(url, join(DIST, "readme", url.split("/").pop()!)))) delete kept.readme.files[lang];
+    }
+    if (kept.readme && !Object.keys(kept.readme.files).length) kept.readme = null;
     items.push(kept);
   }
 }
